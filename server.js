@@ -3,12 +3,7 @@ const http = require("http");
 const fs = require("fs");
 
 const server = http.createServer((req, res) => {
-  fs.readFile(__dirname + "/src/index.html", (err, data) => {
-    if (err) {
-      res.writeHead(404);
-      res.end(JSON.stringify(err));
-      return;
-    }
+  fs.readFile(__dirname + "/index.html", (err, data) => {
     res.writeHead(200);
     res.end(data);
   });
@@ -17,7 +12,7 @@ const server = http.createServer((req, res) => {
 const io = require("socket.io").listen(server);
 io.path("/api");
 
-server.listen(8080, null, () => {
+server.listen(PORT, null, () => {
   console.log("Listening on port " + PORT);
 });
 
