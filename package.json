@@ -1,13 +1,11 @@
 {
-  "name": "",
+  "name": "webrtc-group-chat-example",
   "version": "",
-  "description": "About =====",
+  "description": "",
   "scripts": {
-    "start": "node signaling-server"
+    "start": "node server"
   },
   "dependencies": {
-    "body-parser": "^1.15.2",
-    "express": "^4.14.0",
-    "socket.io": "^1.4.8"
+    "socket.io": "^2.3.0"
   }
 }
