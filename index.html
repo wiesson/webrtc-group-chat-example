@@ -77,8 +77,8 @@
     <script>
       let signalingSocket = null; /* our socket.io connection to our webserver */
       let localMediaStream = null; /* our own microphone / webcam */
-      let peers = {}; /* keep track of our peer connections, indexed by peer_id (aka socket.io id) */
-      let peerMediaElements = {}; /* keep track of our <video>/<audio> tags, indexed by peer_id */
+      let peers = {}; /* keep track of our peer connections, indexed by peerId (aka socket.io id) */
+      let peerMediaElements = {}; /* keep track of our <video>/<audio> tags, indexed by peerId */
 
       function init() {
         console.log("Connecting to signaling server");
@@ -88,7 +88,7 @@
         signalingSocket.on("connect", function () {
           console.log("Connected to signaling server");
           setupLocalMedia().then(() =>
-            join_chat_channel(DEFAULT_CHANNEL, {
+            joinChatChannel(DEFAULT_CHANNEL, {
               "whatever-you-want-here": "stuff",
             })
           );
@@ -98,25 +98,25 @@
           console.log("Disconnected from signaling server");
           /* Tear down all of our peer connections and remove all the
            * media divs when we disconnect */
-          for (peer_id in peerMediaElements) {
-            peerMediaElements[peer_id].remove();
+          for (peerId in peerMediaElements) {
+            peerMediaElements[peerId].remove();
           }
-          for (peer_id in peers) {
-            peers[peer_id].close();
+          for (peerId in peers) {
+            peers[peerId].close();
           }
 
           peers = {};
           peerMediaElements = {};
         });
 
-        function join_chat_channel(channel, userdata) {
+        function joinChatChannel(channel, userData) {
           signalingSocket.emit("join", {
             channel: channel,
-            userdata: userdata,
+            userData: userData,
           });
         }
 
-        function part_chat_channel(channel) {
+        function partChatChannel(channel) {
           signalingSocket.emit("part", channel);
         }
 
@@ -128,15 +128,15 @@
          */
         signalingSocket.on("addPeer", (config) => {
           console.log("Signaling server said to add peer:", config);
-          const peer_id = config.peer_id;
+          const peerId = config.peerId;
 
-          if (peer_id in peers) {
+          if (peerId in peers) {
             /* This could happen if the user joins multiple channels where the other peer is also in. */
-            console.log("Already connected to peer ", peer_id);
+            console.log("Already connected to peer ", peerId);
             return;
           }
           const peerConnection = new RTCPeerConnection(RTC_CONFIGURATION);
-          peers[peer_id] = peerConnection;
+          peers[peerId] = peerConnection;
 
           const remoteMedia = document.createElement("video");
           remoteMedia.setAttribute("playsinline", "true");
@@ -147,13 +147,13 @@
           }
 
           document.body.append(remoteMedia);
-          peerMediaElements[peer_id] = remoteMedia;
+          peerMediaElements[peerId] = remoteMedia;
 
           peerConnection.addEventListener("icecandidate", (event) => {
             if (event.candidate) {
               signalingSocket.emit("relayICECandidate", {
-                peer_id: peer_id,
-                ice_candidate: {
+                peerId: peerId,
+                iceCandidate: {
                   sdpMLineIndex: event.candidate.sdpMLineIndex,
                   candidate: event.candidate.candidate,
                 },
@@ -161,22 +161,13 @@
             }
           });
 
-          peerConnection.addEventListener(
-            "track",
-            ({ transceiver, track, streams }) => {
-              console.log(transceiver);
-              // todo: investigate for safari
-              /* remoteMedia.srcObject = new MediaStream([
-              transceiver.receiver.track,
-            ]); */
-              // remoteMedia.srcObject.addTrack(transceiver.receiver.track);
-              track.onunmute = () => {
-                // don't set srcObject again if it is already set.
-                if (remoteMedia.srcObject) return;
-                remoteMedia.srcObject = streams[0];
-              };
-            }
-          );
+          peerConnection.addEventListener("track", ({ track, streams }) => {
+            track.onunmute = () => {
+              // don't set srcObject again if it is already set.
+              if (remoteMedia.srcObject) return;
+              remoteMedia.srcObject = streams[0];
+            };
+          });
 
           localMediaStream
             .getTracks()
@@ -184,21 +175,16 @@
               peerConnection.addTrack(track, localMediaStream)
             );
 
-          /* Only one side of the peer connection should create the
-           * offer, the signaling server picks one to be the offerer.
-           * The other user will get a 'sessionDescription' event and will
-           * create an offer, then send back an answer 'sessionDescription' to us
-           */
-          if (config.should_create_offer) {
-            console.log("Creating RTC offer to ", peer_id);
+          if (config.shouldCreateOffer) {
+            console.log("Creating RTC offer to ", peerId);
             peerConnection
               .createOffer(OFFER_OPTIONS)
               .then((desc) => {
                 console.log("Local offer description is: ", desc);
                 peerConnection.setLocalDescription(desc).then(() => {
                   signalingSocket.emit("relaySessionDescription", {
-                    peer_id: peer_id,
-                    session_description: desc,
+                    peerId: peerId,
+                    sessionDescription: desc,
                   });
                   console.log("Offer setLocalDescription succeeded");
                 });
@@ -215,26 +201,26 @@
          */
         signalingSocket.on("sessionDescription", (config) => {
           console.log("Remote description received: ", config);
-          const peer_id = config.peer_id;
-          const peer = peers[peer_id];
-          const remote_description = config.session_description;
-          console.log(remote_description);
+          const { peerId } = config;
+          const peer = peers[peerId];
+          const remoteDescription = config.sessionDescription;
+          console.log(remoteDescription);
 
-          const desc = new RTCSessionDescription(remote_description);
+          const desc = new RTCSessionDescription(remoteDescription);
           peer
-            .setRemoteDescription(remote_description)
+            .setRemoteDescription(remoteDescription)
             .then(() => {
-              if (remote_description.type === "offer") {
+              if (remoteDescription.type === "offer") {
                 console.log("Creating answer");
                 peer
                   .createAnswer()
-                  .then((local_description) => {
+                  .then((localDescription) => {
                     peer
-                      .setLocalDescription(local_description)
+                      .setLocalDescription(localDescription)
                       .then(() => {
                         signalingSocket.emit("relaySessionDescription", {
-                          peer_id: peer_id,
-                          session_description: local_description,
+                          peerId: peerId,
+                          sessionDescription: localDescription,
                         });
                         console.log("Answer setLocalDescription succeeded");
                       })
@@ -258,10 +244,10 @@
          * can begin trying to find the best path to one another on the net.
          */
         signalingSocket.on("iceCandidate", async (config) => {
-          const peer = peers[config.peer_id];
-          const ice_candidate = config.ice_candidate;
+          const peer = peers[config.peerId];
+          const { iceCandidate } = config;
           peer
-            .addIceCandidate(new RTCIceCandidate(ice_candidate))
+            .addIceCandidate(new RTCIceCandidate(iceCandidate))
             .catch((err) => console.log("error on iceCandidate", err));
         });
 
@@ -277,16 +263,18 @@
          */
         signalingSocket.on("removePeer", function (config) {
           console.log("Signaling server said to remove peer:", config);
-          const peer_id = config.peer_id;
-          if (peer_id in peerMediaElements) {
-            peerMediaElements[peer_id].remove();
-          }
-          if (peer_id in peers) {
-            peers[peer_id].close();
+          const { peerId } = config;
+
+          if (peerId in peerMediaElements) {
+            peerMediaElements[peerId].remove();
           }
 
-          delete peers[peer_id];
-          delete peerMediaElements[config.peer_id];
+          if (peerId in peers) {
+            peers[peerId].close();
+          }
+
+          delete peers[peerId];
+          delete peerMediaElements[config.peerId];
         });
       }
 
