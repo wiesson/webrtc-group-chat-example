@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0"
+    />
+    <style>
+      :root {
+        --fontSystemFont: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif, "Apple Color Emoji",
+          "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+        --colorText: #212529;
+        --colorYellow: #ffcf04;
+        --colorTeal: #cde7e5;
+      }
+
+      html {
+        box-sizing: border-box;
+        font-family: var(--fontSystemFont);
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      *,
+      :after,
+      :before {
+        box-sizing: inherit;
+      }
+
+      body {
+        margin: 1rem;
+        overflow-y: scroll;
+      }
+
+      .peers {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        grid-gap: 1rem;
+      }
+
+      @media (min-width: 540px) {
+        .peers {
+          grid-template-columns: 1fr 1fr 1fr;
+          grid-gap: 1rem;
+        }
+      }
+
+      .self {
+        position: absolute;
+        right: 1rem;
+        bottom: 1rem;
+        width: 25vw;
+      }
+
+      .self__video {
+        transform: scaleX(-1);
+      }
+
+      video {
+        display: block;
+        margin: 0;
+        background: #222;
+        --width: 100%;
+        width: var(--width);
+      }
+    </style>
+
+    <script src="https://unpkg.com/socket.io-client@2.3.0/dist/socket.io.js"></script>
+    <script>
+      const USE_AUDIO = true;
+      const USE_VIDEO = true;
+      const DEFAULT_CHANNEL = "some-cool-testing-channel";
+      const OFFER_OPTIONS = { offerToReceiveAudio: 1, offerToReceiveVideo: 1 };
+
+      const RTC_CONFIGURATION = {
+        iceServers: [
+          {
+            urls: [
+              "stun:stun1.l.google.com:19302",
+              "stun:stun2.l.google.com:19302",
+            ],
+          },
+        ],
+        iceCandidatePoolSize: 10,
+      };
+
+      let socket = null;
+      let localMediaStream = null;
+      let peers = {};
+      let peerMediaElements = {};
+
+      function init() {
+        console.log("Connecting to signaling server");
+        socket = io().connect();
+
+        socket.addEventListener("connect", () => {
+          console.log("Got my socketId", socket.id);
+          console.log("Connected to signaling server");
+          setupLocalMedia().then(() =>
+            joinChatChannel(DEFAULT_CHANNEL, {
+              userName: "random-name",
+            })
+          );
+        });
+
+        socket.addEventListener("disconnect", () => {
+          console.log("Disconnected from signaling server");
+
+          for (const sid in peerMediaElements) {
+            peerMediaElements[sid].remove();
+          }
+
+          for (const sid in peers) {
+            peers[sid].close();
+          }
+
+          peers = {};
+          peerMediaElements = {};
+        });
+
+        function joinChatChannel(channelId, userData) {
+          socket.emit("join", { channelId, userData });
+        }
+
+        function getRTCPeerConnection(sid) {
+          const peerConnection = new RTCPeerConnection(RTC_CONFIGURATION);
+
+          if (sid !== socket.id) {
+            const wrapper = document.createElement("div");
+            wrapper.innerText = sid;
+            const remoteMedia = document.createElement("video");
+            remoteMedia.setAttribute("playsinline", "true");
+            remoteMedia.setAttribute("autoplay", "true");
+            wrapper.append(remoteMedia);
+            document.querySelector(".peers").append(wrapper);
+            peerMediaElements[sid] = remoteMedia;
+          }
+
+          peers[sid] = peerConnection;
+
+          peerConnection.addEventListener("icecandidate", (event) => {
+            const { candidate } = event;
+
+            if (!candidate) {
+              return;
+            }
+
+            socket.emit("relayICECandidate", {
+              sid: sid,
+              iceCandidate: candidate,
+            });
+          });
+
+          peerConnection.addEventListener("track", ({ track, streams }) => {
+            track.addEventListener("unmute", () => {
+              peerMediaElements[sid].srcObject = streams[0];
+            });
+          });
+
+          localMediaStream
+            .getTracks()
+            .forEach((track) =>
+              peerConnection.addTrack(track, localMediaStream)
+            );
+
+          return peerConnection;
+        }
+
+        function partChatChannel(channel) {
+          socket.emit("part", channel);
+        }
+
+        socket.addEventListener("addPeer", async (config) => {
+          const sid = config.sid;
+          console.log(`${sid} joined, preparing offer`, config);
+
+          if (sid in peers) {
+            console.log("Already connected to peer ", sid);
+            return;
+          }
+
+          const peerConnection = getRTCPeerConnection(sid);
+
+          console.log(`Creating RTC offer to ${sid}`);
+          const sessionDescription = await peerConnection.createOffer(
+            OFFER_OPTIONS
+          );
+
+          await peerConnection.setLocalDescription(sessionDescription);
+          socket.emit("relaySessionDescription", {
+            sid,
+            sessionDescription,
+          });
+          console.log(`Sent sessionDescription offer to ${sid}`);
+        });
+
+        socket.addEventListener("sessionDescription", async (config) => {
+          console.log("Remote description received: ", config);
+          const { sid, sessionDescription: remoteDescription } = config;
+
+          const peer = peers[sid] || getRTCPeerConnection(sid);
+          const sessionDescription = new RTCSessionDescription(
+            remoteDescription
+          );
+          await peer.setRemoteDescription(sessionDescription);
+
+          if (remoteDescription.type !== "offer") {
+            return;
+          }
+
+          console.log("Creating answer");
+          const localDescription = await peer.createAnswer();
+          await peer.setLocalDescription(localDescription);
+
+          socket.emit("relaySessionDescription", {
+            sid,
+            sessionDescription: localDescription,
+          });
+
+          console.log("Answer setLocalDescription succeeded");
+        });
+
+        socket.addEventListener("iceCandidate", async (config) => {
+          const peer = peers[config.sid];
+          const { iceCandidate } = config;
+          const { candidate, sdpMLineIndex } = iceCandidate;
+
+          peer
+            .addIceCandidate(new RTCIceCandidate({ candidate, sdpMLineIndex }))
+            .catch((err) => {
+              console.log(iceCandidate);
+              console.log(err);
+            });
+        });
+
+        socket.addEventListener("removePeer", (config) => {
+          console.log("Signaling server said to remove peer:", config);
+          const { sid } = config;
+          if (sid in peerMediaElements) {
+            peerMediaElements[sid].parentElement.remove();
+          }
+
+          if (sid in peers) {
+            peers[sid].close();
+          }
+
+          delete peers[sid];
+          delete peerMediaElements[config.sid];
+        });
+      }
+
+      async function setupLocalMedia() {
+        if (localMediaStream) {
+          return Promise.resolve();
+        }
+        console.log("Requesting access to local audio / video inputs");
+
+        return navigator.mediaDevices
+          .getUserMedia({ audio: USE_AUDIO, video: USE_VIDEO })
+          .then((stream) => {
+            const media = document.createElement("video");
+            media.classList.add("self__video");
+            media.setAttribute("playsinline", "true");
+            media.setAttribute("autoplay", "true");
+            media.muted = true;
+            media.srcObject = stream;
+            document.querySelector(".self").append(media);
+            window.stream = stream;
+            localMediaStream = stream;
+          })
+          .catch(function (err) {
+            console.log("Access denied for audio/video", err);
+            alert(
+              "You chose not to provide access to the camera/microphone, demo will not work."
+            );
+          });
+      }
+    </script>
+  </head>
+  <body onload="init()">
+    <div class="peers"></div>
+    <div class="self"></div>
+  </body>
+</html>

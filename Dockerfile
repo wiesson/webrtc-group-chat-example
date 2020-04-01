@@ -2,7 +2,7 @@ FROM node:13-alpine
 
 WORKDIR /usr/src/app
 
-COPY index.html server.js package*.json ./
+COPY dist/index.html dist/server.js package*.json ./
 RUN npm install
 
 EXPOSE 8080
